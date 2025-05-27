@@ -38,6 +38,7 @@ ros2 run px4_ros_com map_publisher_without_visualization
 ```
 Adjust grid size, padding, and clustering thresholds via ROS 2 parameters or code constants.
 
+![Occupancy Grid Example](images/occupancy_grid.png)
 ---
 
 ## 2. Object Tracking & Following (Simulation)
@@ -70,6 +71,7 @@ ros2 run px4_ros_com object_follower.py
 ```
 Adjust parameters (`follow_distance`, `hover_height`, `yaw_gain`) via ROS 2 parameters or in‑script defaults.
 
+![Object Follower Example](images/object_follower.png)
 ---
 
 ## 3. Object Tracking & Following (Real Drone)
@@ -106,6 +108,7 @@ ros2 run px4_ros_com follower_pub.py
 Follow the prompt to enter your desired object class, arm the drone, and switch to OFFBOARD mode.  
 Remap `/planner/goal` to any planner node for integrated local planning.
 
+![Follower Pub Example](images/object_follower_real.gif)
 ---
 
 ## 4. Local Planner (Diagnostics)
@@ -131,6 +134,10 @@ ros2 run px4_ros_com planner_diag.py
 ```
 Enter goal when prompted, then arm drone and switch to OFFBOARD to start autonomous navigation.
 
+### Visualization
+- Use `rviz2` to visualize the planned path and occupancy grid.
+
+![Planner Diagnostics Example](images/planner_diag.gif)
 ---
 
 ## 5. Local Planner (Subscriber Mode)
@@ -151,10 +158,11 @@ Enter goal when prompted, then arm drone and switch to OFFBOARD to start autonom
 
 ### Usage
 ```bash
-ros2 run px4_ros_com test_planner_sub.py
+ros2 run px4_ros_com planner_sub.py
 ```
 Pair this with `object_follower.py`by remapping their setpoint publisher to `/planner/goal`.
 
+![Planner Subscriber Example](images/planner_sub.png)
 ---
 
 ## Visualization & Debugging
