@@ -1,95 +1,179 @@
-# Real-Time Obstacle Avoidance and Tracking
+# StereoSight ROS 2 Package
 
-This project implements real-time obstacle avoidance and tracking for drones using the ModalAI VOXL 2 platform. The system leverages depth data obtained from a calibrated stereo camera, processed through the VOXL-DFS server, and converted into ROS 2 nodes using the `voxl_mpa_to_ros2` package. The provided scripts enable the drone to navigate while avoiding obstacles by generating occupancy grids and planning paths.
+This repository provides a complete pipeline for real‑time stereo‑vision‑based local planning and object following on drones using ROS 2 and ModalAI VOXL 2.
 
-## Dependencies
+---
 
-To run this project, you need the following dependenciess:
+## Package Overview
 
-1. **ROS 2**: Install ROS 2 (e.g., Humble or Foxy) on your system. Follow the [official installation guide](https://docs.ros.org/en/rolling/Installation.html).
-2. **Python Packages**:
-   - `numpy`
-   - `opencv-python`
-   - `scipy`
-3. **VOXL 2 and VOXL-DFS**:
-   - Ensure the VOXL 2 platform is set up and the stereo camera is calibrated.
-   - Install the `voxl_mpa_to_ros2` package to bridge VOXL data to ROS 2.
+1. **Perception & Mapping** (`map_publisher_without_visualization.py`)
+2. **Object Tracking & Following (Simulation)** (`object_follower.py`)
+3. **Object Tracking & Following (Real Drone, TFLite)** (`follower_pub.py`)
+4. **Local Planner (Diagnostics)** (`planner_diag.py`)
+5. **Local Planner (Subscriber Mode)** (`planner_sub.py`)
 
-## Setup Instructions
+---
 
-1. Inside the drone, navigate to the `voxl_mpa_to_ros2` folder:
-   ```bash
-   cd ~/colcon_ws/src/px4_ros_ws/src/px4_ros_com/src/examples
-   ```
+## 1. Perception & Mapping Node
 
-2. Create a directory for the obstacle avoidance scripts:
-   ```bash
-   mkdir obstacle_avoidance
-   ```
+**Script:** `map_publisher_without_visualization.py`   
+**Purpose:** Converts a calibrated stereo point cloud into a 2D occupancy grid in the drone’s local frame.
 
-3. Copy the following scripts into the `obstacle_avoidance` directory:
-   - `planner.py`
-   - `matrix.py`
-   - `rotated.py`
-   - `map_publisher.py`
+### High‑Level Workflow
+1. **Subscribe** to `/stereo_front_pc` (`sensor_msgs/PointCloud2`), `/fmu/out/vehicle_local_position`, and `/fmu/out/vehicle_attitude`.
+2. **Transform** raw camera points into the NED frame via a fixed rotation matrix.
+3. **Filter & Cluster**:
+   - Down‑sample large clouds (> 50k points).
+   - Remove points within an origin radius (drone body exclusion).
+   - Cluster with DBSCAN and filter by cluster size to suppress noise.
+4. **Histogram → Binary Grid**:
+   - Compute a 2D histogram over X/Y bins.
+   - Apply median filtering, threshold to binary occupancy.
+   - Dilate obstacles by a padding parameter.
+5. **Publish** `nav_msgs/OccupancyGrid` on `occupancy_grid`, with moving grid origin and yaw alignment based on current drone pose.
 
-   Example command:
-   ```bash
-   cp /path/to/scripts/*.py ~/colcon_ws/src/px4_ros_ws/src/px4_ros_com/src/examples/obstacle_avoidance/
-   ```
-
-4. Update the `CMakeLists.txt` file in `px4_ros_ws/src/px4_ros_com` to include the new scripts. Add the following lines:
-   ```cmake
-   install(PROGRAMS
-     src/examples/obstacle_avoidance/map_publisher.py
-     src/examples/obstacle_avoidance/matrix.py
-     src/examples/obstacle_avoidance/rotated.py
-     src/examples/obstacle_avoidance/planner.py
-   DESTINATION lib/${PROJECT_NAME}
-   )
-   ```
-
-5. Build the workspace:
-   ```bash
-   cd ~/colcon_ws
-   colcon build
-   source install/setup.bash
-   ```
-
-## Running the Scripts
-
-### 1. Start the Map Publisher
-The `map_publisher.py` script generates occupancy grids from the point cloud data and publishes them as ROS 2 messages.
-
-Run the following command:
+### Usage
 ```bash
-ros2 run px4_ros_com map_publisher.py
+ros2 run px4_ros_com map_publisher_without_visualization
 ```
+Adjust grid size, padding, and clustering thresholds via ROS 2 parameters or code constants.
 
-### 2. Start the Path Planner
-The `planner.py` script subscribes to the occupancy grid and computes a path using Dijkstra's algorithm.
+---
 
-Run the following command:
+## 2. Object Tracking & Following (Simulation)
+
+**Script:** `object_follower.py`   
+**Purpose:** Simulation-only node that detects and tracks a chosen object in the camera view using YOLO v8, then publishes offboard setpoints to follow it in simulation.
+
+### High‑Level Workflow
+1. **Subscribe** to:
+   - `/image_rect/compressed` (`sensor_msgs/CompressedImage`)
+   - `/fmu/out/vehicle_local_position`
+   - `/fmu/out/vehicle_status`
+   - `/fmu/out/vehicle_control_mode`
+2. **Decode & Inference**:
+   - Use Ultralytics YOLO v8n to detect bounding boxes in each frame.
+   - Display detections in an OpenCV window.
+3. **Target Selection**:
+   - Press number keys (0–9) to lock onto a detected object.
+4. **Compute Setpoints**:
+   - Normalize pixel error from image center.
+   - Calculate desired North/East/Down offsets and yaw adjustments based on model output.
+5. **Publish**:
+   - `px4_msgs/OffboardControlMode` heartbeat at 20 Hz.
+   - `px4_msgs/TrajectorySetpoint` whenever offboard is active.
+   - Annotated image on `/image_rect/yolo_annotated`.
+
+### Usage
 ```bash
-ros2 run px4_ros_com planner.py
+ros2 run px4_ros_com object_follower.py
 ```
+Adjust parameters (`follow_distance`, `hover_height`, `yaw_gain`) via ROS 2 parameters or in‑script defaults.
 
-### 3. Visualize the Results
-You can visualize the occupancy grid and planned path using tools like `rviz2`:
+---
+
+## 3. Object Tracking & Following (Real Drone)
+
+**Script:** `follower_pub.py`   
+**Purpose:** On-vehicle node that uses the VOXL 2’s built-in YOLO v11n model (via TFLite) to detect a specified class and publish trajectory goals to `/planner/goal` for real-world flight.
+
+### High‑Level Workflow
+1. **Launch** and **enter target class** when prompted (e.g., `laptop`).
+2. **Subscribe** to:
+   - `/tflite_data` (`voxl_msgs/msg/Aidetection`)
+   - `/fmu/out/vehicle_local_position` (`VehicleLocalPosition`)
+   - `/fmu/out/vehicle_status` (`VehicleStatus`)
+   - `/fmu/out/vehicle_control_mode` (`VehicleControlMode`)
+3. **Detection Callback**:
+   - Receives bounding boxes and class names from TFLite inference messages.
+   - Filters for the user-specified class.
+   - Computes bounding box center (cx, cy) and area.
+   - Initializes `desired_area` on first detection to maintain target distance.
+4. **Compute Setpoints**:
+   - Normalize pixel errors: `ex = (cx - img_w/2)/img_w`, `ey = (cy - img_h/2)/img_h`.
+   - Calculate North/East/Down setpoints using gains `K_FWD`, `K_LAT`, `K_VERT` and area error.
+   - Determine yaw adjustment via `K_YAW * ex`.
+   - Round positions to one decimal.
+5. **Heartbeat & Publishing**:
+   - Timer (20 Hz) publishes `OffboardControlMode` heartbeat.
+   - When offboard enabled, publishes `TrajectorySetpoint` to `/planner/goal`.
+   - Logs current goal coordinates for monitoring.
+
+### Usage
 ```bash
-rviz2
+ros2 run px4_ros_com follower_pub.py
 ```
+Follow the prompt to enter your desired object class, arm the drone, and switch to OFFBOARD mode.  
+Remap `/planner/goal` to any planner node for integrated local planning.
 
-Add the following topics to visualize:
-- `/occupancy_grid` (OccupancyGrid)
-- `/planned_path` (Path)
+---
 
-## Notes
+## 4. Local Planner (Diagnostics)
 
-- Ensure the VOXL 2 platform is running and publishing point cloud data to the `/voa_pc_out` topic.
-- The stereo camera must be calibrated, and the depth data should be accurate for proper obstacle avoidance.
-- Adjust parameters like grid resolution and thresholds in the scripts as needed for your specific environment.
+**Script:** `planner_diag.py`   
+**Purpose:** Standalone Dijkstra planner that asks for a fixed goal at startup, then listens to `occupancy_grid` and publishes a safe path.
+
+### High‑Level Workflow
+1. **Goal Setup:** Prompt user for `(x, y)` goal in world coordinates on launch.
+2. **Subscribe** to:
+   - `/fmu/out/vehicle_local_position`
+   - `/fmu/out/vehicle_control_mode`
+   - `occupancy_grid`
+3. **Compute Cost Grid:** Convert occupancy values >50 to infinite cost, others to unit cost.
+4. **Run Dijkstra** on the grid from current drone cell to goal cell.
+5. **Publish**:
+   - `nav_msgs/Path` (`planned_path`) for visualization.
+   - Stepwise `TrajectorySetpoint` at 10 Hz, with automatic replanning if the next waypoint becomes blocked.
+
+### Usage
+```bash
+ros2 run px4_ros_com planner_diag.py
+```
+Enter goal when prompted, then arm drone and switch to OFFBOARD to start autonomous navigation.
+
+---
+
+## 5. Local Planner (Subscriber Mode)
+
+**Script:** `planner_sub.py`   
+**Purpose:** Decoupled planner that subscribes to dynamic goals from a follower node on `/planner/goal`.
+
+### High‑Level Workflow
+1. **Subscribe** to:
+   - `/fmu/out/vehicle_local_position`
+   - `/fmu/out/vehicle_control_mode`
+   - `occupancy_grid`
+   - `/planner/goal` (`px4_msgs/TrajectorySetpoint`)
+2. **Update Goal:** On each new setpoint from `/planner/goal`, recompute goal cell and replan path.
+3. **Publish**:
+   - `nav_msgs/Path` for visualization.
+   - `TrajectorySetpoint` toward each waypoint, maintaining the follower’s yaw.
+
+### Usage
+```bash
+ros2 run px4_ros_com test_planner_sub.py
+```
+Pair this with `object_follower.py`by remapping their setpoint publisher to `/planner/goal`.
+
+---
+
+## Visualization & Debugging
+- Launch `rviz2` and add:
+  - **OccupancyGrid**: `/occupancy_grid`
+  - **Path**: `/planned_path`
+  - **TF**: Show the `map` and `fmu` frames.
+
+## Notes & Tuning
+- Ensure your stereo camera calibration is accurate.
+- Tune clustering (`DBSCAN_EPS`, `MIN_POINTS_PER_CLUSTER`) and grid parameters (`GRID_BINS`, `padding`) to match your environment.
+- Adjust YOLO detection confidence threshold or TFLite parameters if needed.
+
+---
+## Demo Video
+Demonstration of the complete pipeline in action can be found [here](https://drive.google.com/drive/folders/1kjNyi5jBFPzSZh6DpPPCA_q1pGDGELaL?usp=drive_link).
+
+## Contributions
+[Nitish](https://rrnitish.com/), [Eashwar Sathyamurthy](https://github.com/Eashwar-S)
 
 ## License
-
-This project is licensed under the MIT License. See the `LICENSE` file for details.
+This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
